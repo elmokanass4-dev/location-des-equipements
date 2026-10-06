@@ -1,0 +1,6 @@
+{
+  "name": "Kriya - Logiciel de Location d'Équipement",
+  "description": "Solution complète de gestion de location d'équipements : disponibilité en temps réel, réservations, cautions, contrats, maintenance et catalogue public.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
