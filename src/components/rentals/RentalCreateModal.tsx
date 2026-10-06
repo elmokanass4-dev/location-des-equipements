@@ -22,6 +22,7 @@ import {
   MaintenanceLog,
   BookingStatus,
 } from '../../types';
+import { localDateTimeValue, validRentalDates } from '../../services/dashboardMetrics';
 import { Modal } from '../common/Modal';
 import { calculateEquipmentAvailability } from '../../services/availabilityEngine';
 
@@ -52,7 +53,7 @@ export const RentalCreateModal: React.FC<RentalCreateModalProps> = ({
   taxRateDefault,
   bufferHoursDefault,
 }) => {
-  const { t, formatCurrency } = useI18n();
+  const { t, formatCurrency, language } = useI18n();
 
   // Helper dates: default starts tomorrow 09:00, ends 3 days later 18:00
   const getDefaultDates = () => {
@@ -65,8 +66,8 @@ export const RentalCreateModal: React.FC<RentalCreateModalProps> = ({
     end.setHours(18, 0, 0, 0);
 
     return {
-      startStr: start.toISOString().slice(0, 16),
-      endStr: end.toISOString().slice(0, 16),
+      startStr: localDateTimeValue(start),
+      endStr: localDateTimeValue(end),
     };
   };
 
@@ -188,6 +189,11 @@ export const RentalCreateModal: React.FC<RentalCreateModalProps> = ({
     });
   }, [selectedLines, availabilityMap]);
 
+  const datesValid = validRentalDates(startDate, endDate);
+  const canChooseEquipment = Boolean(selectedCustomerId && selectedLocationId && datesValid && (deliveryType !== 'delivery' || deliveryAddress.trim()));
+  const canReview = canChooseEquipment && selectedLines.length > 0 && !hasAvailabilityConflict;
+  const dateError = language === 'en' ? 'Choose an end date after the start date.' : language === 'ar' ? 'اختر تاريخ نهاية بعد تاريخ البداية.' : 'Choisissez une date de fin après la date de début.';
+
   // Totals calculations
   const itemsSubtotal = useMemo(() => {
     return selectedLines.reduce((sum, line) => {
@@ -210,7 +216,7 @@ export const RentalCreateModal: React.FC<RentalCreateModalProps> = ({
 
   // Final submission
   const handleSubmit = (bookingStatus: BookingStatus) => {
-    if (!selectedCustomerId || selectedLines.length === 0) return;
+    if (!canReview) return;
 
     const refNumber = `LOK-2026-${Math.floor(1000 + Math.random() * 9000)}`;
 
@@ -301,7 +307,7 @@ export const RentalCreateModal: React.FC<RentalCreateModalProps> = ({
           <span>{t.rentalCreate.step1}</span>
         </button>
         <button
-          onClick={() => setStep(2)}
+          onClick={() => setStep(2)} disabled={!selectedCustomerId}
           className={`flex items-center gap-1.5 pb-1 border-b-2 transition-all ${
             step === 2 ? 'border-[#1E4D38] text-[#1E4D38]' : 'border-transparent text-stone-400'
           }`}
@@ -309,7 +315,7 @@ export const RentalCreateModal: React.FC<RentalCreateModalProps> = ({
           <span>{t.rentalCreate.step2}</span>
         </button>
         <button
-          onClick={() => setStep(3)}
+          onClick={() => setStep(3)} disabled={!canChooseEquipment}
           className={`flex items-center gap-1.5 pb-1 border-b-2 transition-all ${
             step === 3 ? 'border-[#1E4D38] text-[#1E4D38]' : 'border-transparent text-stone-400'
           }`}
@@ -317,7 +323,7 @@ export const RentalCreateModal: React.FC<RentalCreateModalProps> = ({
           <span>{t.rentalCreate.step3} ({selectedLines.length})</span>
         </button>
         <button
-          onClick={() => setStep(4)}
+          onClick={() => setStep(4)} disabled={!canReview}
           className={`flex items-center gap-1.5 pb-1 border-b-2 transition-all ${
             step === 4 ? 'border-[#1E4D38] text-[#1E4D38]' : 'border-transparent text-stone-400'
           }`}
@@ -467,6 +473,7 @@ export const RentalCreateModal: React.FC<RentalCreateModalProps> = ({
       )}
 
       {/* STEP 2: Période & Lieu */}
+      {step === 2 && !datesValid && <p role="alert" className="mb-3 rounded-lg bg-amber-50 p-3 text-sm text-amber-800">{dateError}</p>}
       {step === 2 && (
         <div className="space-y-4">
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs">
@@ -582,6 +589,7 @@ export const RentalCreateModal: React.FC<RentalCreateModalProps> = ({
             <button
               type="button"
               onClick={() => setStep(3)}
+              disabled={!canChooseEquipment}
               className="rounded-lg bg-[#1E4D38] px-4 py-2 text-xs font-semibold text-white hover:bg-[#163B2B]"
             >
               Étape suivante : Choix du matériel →
@@ -752,7 +760,7 @@ export const RentalCreateModal: React.FC<RentalCreateModalProps> = ({
             <button
               type="button"
               onClick={() => setStep(4)}
-              disabled={selectedLines.length === 0 || hasAvailabilityConflict}
+              disabled={!canReview}
               className="rounded-lg bg-[#1E4D38] px-4 py-2 text-xs font-semibold text-white hover:bg-[#163B2B] disabled:opacity-40"
             >
               Étape suivante : Récapitulatif & Tarifs →
@@ -864,21 +872,21 @@ export const RentalCreateModal: React.FC<RentalCreateModalProps> = ({
             <div className="flex items-center gap-2">
               <button
                 type="button"
-                onClick={() => handleSubmit('draft')}
+                onClick={() => handleSubmit('draft')} disabled={!canReview}
                 className="rounded-lg border border-stone-200 bg-white px-3 py-2 text-xs font-semibold text-stone-700 hover:bg-stone-50"
               >
                 {t.rentalCreate.saveDraft}
               </button>
               <button
                 type="button"
-                onClick={() => handleSubmit('quote')}
+                onClick={() => handleSubmit('quote')} disabled={!canReview}
                 className="rounded-lg border border-blue-200 bg-blue-50/60 px-3 py-2 text-xs font-semibold text-blue-800 hover:bg-blue-100"
               >
                 {t.rentalCreate.saveQuote}
               </button>
               <button
                 type="button"
-                onClick={() => handleSubmit('confirmed')}
+                onClick={() => handleSubmit('confirmed')} disabled={!canReview}
                 className="rounded-lg bg-[#1E4D38] px-4 py-2 text-xs font-semibold text-white shadow-xs hover:bg-[#163B2B]"
               >
                 {t.rentalCreate.confirmBooking}
