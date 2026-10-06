@@ -5,6 +5,7 @@ import {defineConfig} from 'vite';
 
 export default defineConfig(() => {
   return {
+    base: '/location-des-equipements/',
     plugins: [react(), tailwindcss()],
     resolve: {
       alias: {
