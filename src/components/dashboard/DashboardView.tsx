@@ -26,6 +26,7 @@ import {
   AuditEvent,
 } from '../../types';
 import { NavSection } from '../common/Sidebar';
+import { outstandingUnits, isActiveBooking, outstandingBalance } from '../../services/dashboardMetrics';
 import { StatusBadge } from '../common/StatusBadge';
 
 interface DashboardViewProps {
@@ -57,11 +58,11 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
   const now = new Date();
   const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  const todayEnd = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59);
+  const todayEnd = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
 
   // 1. Pickups scheduled today
   const pickupsToday = rentals.filter((r) => {
-    if (r.bookingStatus === 'cancelled' || r.bookingStatus === 'declined') return false;
+    if (r.bookingStatus !== 'confirmed') return false;
     const start = new Date(r.startDate);
     return (
       start >= todayStart &&
@@ -72,7 +73,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
   // 2. Returns expected today
   const returnsExpectedToday = rentals.filter((r) => {
-    if (r.fulfillmentStatus === 'returned' || r.fulfillmentStatus === 'closed') return false;
+    if (!isActiveBooking(r) || outstandingUnits(r) === 0) return false;
     const end = new Date(r.endDate);
     return end >= todayStart && end <= todayEnd;
   });
@@ -82,12 +83,12 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     if (r.fulfillmentStatus === 'returned' || r.fulfillmentStatus === 'closed') return false;
     if (r.bookingStatus !== 'confirmed') return false;
     const end = new Date(r.endDate);
-    return end < now && (r.fulfillmentStatus === 'checked_out' || r.fulfillmentStatus === 'partially_picked_up');
+    return end < now && outstandingUnits(r) > 0;
   });
 
   // 4. Equipment currently rented
   const activeRentals = rentals.filter(
-    (r) => r.fulfillmentStatus === 'checked_out' || r.fulfillmentStatus === 'partially_picked_up'
+    (r) => isActiveBooking(r) && outstandingUnits(r) > 0
   );
   const rentedUnitsCount = activeRentals.reduce(
     (sum, r) => sum + r.lines.reduce((lsum, line) => lsum + Math.max(0, line.pickedUpQuantity - line.returnedQuantity), 0),
@@ -98,21 +99,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   const activeMaintenanceLogs = maintenance.filter((m) => m.status !== 'resolved');
   const maintenanceCount = activeMaintenanceLogs.reduce((sum, m) => sum + (m.affectedQuantity || 1), 0);
 
-  // 6. Outstanding rental balance
-  const totalRentalCharged = rentals
-    .filter((r) => r.bookingStatus !== 'cancelled' && r.bookingStatus !== 'declined')
-    .reduce((sum, r) => sum + r.rentalTotal, 0);
-
-  const totalRentalPaid = payments
-    .filter((p) => p.type === 'rental_charge_payment')
-    .reduce((sum, p) => sum + p.amount, 0);
-
-  const totalRentalRefunds = payments
-    .filter((p) => p.type === 'rental_refund')
-    .reduce((sum, p) => sum + p.amount, 0);
-
-  const netRentalCashCollected = totalRentalPaid - totalRentalRefunds;
-  const totalOutstandingBalance = Math.max(0, totalRentalCharged - totalRentalPaid);
+  const totalOutstandingBalance = outstandingBalance(rentals, payments);
+  const activeCustomerCount = new Set(activeRentals.map(rental => rental.customerId)).size;
 
   // 7. Deposits currently held (Deposits received - refunded - deducted)
   const depositsHeld = deposits.reduce((balance, d) => {
@@ -123,6 +111,10 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
   return (
     <div className="space-y-6">
+      <div className="flex flex-wrap items-center justify-between gap-4">
+        <div><h1 className="text-2xl font-semibold tracking-tight text-stone-900">{t.dashboard.headline}</h1><p className="mt-1 text-sm text-stone-500">{formatDate(now.toISOString())}</p></div>
+        <button type="button" onClick={onOpenNewRental} className="inline-flex items-center gap-2 rounded-xl bg-[#1E4D38] px-5 py-3 text-sm font-semibold text-white hover:bg-[#163B2B] focus-visible:outline-2 focus-visible:outline-offset-2"><Plus className="h-4 w-4" />{t.dashboard.newRental}</button>
+      </div>
       {/* Demo Workspace Banner */}
       <div className="rounded-xl border border-stone-200/90 bg-stone-50/80 p-4 text-xs text-stone-700 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-2xs">
         <div className="flex items-start gap-2.5">
@@ -138,6 +130,53 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         </div>
       </div>
 
+      {/* Overdue Alert Banner if any */}
+      {overdueRentals.length > 0 && (
+        <div className="rounded-xl border border-amber-300 bg-amber-50/70 p-4">
+          <div className="flex items-start gap-3">
+            <AlertTriangle className="h-5 w-5 text-amber-700 shrink-0 mt-0.5" />
+            <div className="flex-1">
+              <h3 className="text-xs font-bold text-amber-900 uppercase tracking-wide">
+                Retards critiques de restitution ({overdueRentals.length})
+              </h3>
+              <p className="text-xs text-amber-800 mt-0.5">
+                Ouvrez le dossier pour enregistrer la restitution du matériel encore chez le client.
+              </p>
+              <div className="mt-3 space-y-2">
+                {overdueRentals.map((rental) => {
+                  const cust = customers.find((c) => c.id === rental.customerId);
+                  return (
+                    <div
+                      key={rental.id}
+                      role="button" tabIndex={0} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onSelectRental(rental); } }} onClick={() => onSelectRental(rental)}
+                      className="cursor-pointer flex flex-col sm:flex-row sm:items-center justify-between gap-2 p-2.5 rounded-lg bg-white/80 border border-amber-200/80 hover:bg-white text-xs"
+                    >
+                      <div className="flex items-center gap-2">
+                        <span className="font-semibold text-stone-900">{rental.referenceNumber}</span>
+                        <span>·</span>
+                        <span className="text-stone-700">{cust?.name || 'Client'}</span>
+                        <span>·</span>
+                        <span className="text-stone-500">
+                          {rental.lines.filter(l => l.pickedUpQuantity > l.returnedQuantity).map((l) => `${l.pickedUpQuantity - l.returnedQuantity}× ${l.equipmentName}`).join(', ')}
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-3">
+                        <span className="text-amber-800 font-medium">
+                          Retour prévu le {formatDateTime(rental.endDate)}
+                        </span>
+                        <span className="text-[#1E4D38] font-semibold hover:underline">
+                          Gérer le dossier →
+                        </span>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* The 5 Key Operational Questions - Answer Cards */}
       <div>
         <div className="mb-3">
@@ -147,15 +186,15 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           <p className="text-xs text-stone-500">{t.dashboard.subheadline}</p>
         </div>
 
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
+        <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-5 gap-4">
           {/* Card 1: Availability */}
           <div
-            onClick={() => onNavigate('inventory')}
-            className="group cursor-pointer rounded-xl border border-stone-200 bg-white p-4 transition-all hover:border-[#1E4D38]/50 hover:shadow-xs flex flex-col justify-between"
+            role="button" tabIndex={0} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onNavigate('inventory'); } }} onClick={() => onNavigate('inventory')}
+            className="group cursor-pointer rounded-xl border border-stone-200 bg-white p-5 transition-all hover:border-[#1E4D38]/50 hover:shadow-xs flex flex-col justify-between"
           >
             <div>
               <div className="text-[11px] font-medium text-stone-500 flex items-center justify-between">
-                <span>1. Disponibilité</span>
+                <span>Catalogue matériel</span>
                 <ArrowUpRight className="h-3.5 w-3.5 text-stone-400 group-hover:text-[#1E4D38]" />
               </div>
               <div className="mt-2 text-2xl font-bold text-stone-900 tracking-tight">
@@ -164,24 +203,24 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               <div className="text-xs text-stone-600 mt-0.5">références cataloguées</div>
             </div>
             <div className="mt-3 pt-2 border-t border-stone-100 text-[11px] text-stone-500">
-              Vérification continue par créneau
+              Consulter les stocks et disponibilités
             </div>
           </div>
 
           {/* Card 2: Who currently has our equipment? */}
           <div
-            onClick={() => onNavigate('rentals')}
+            role="button" tabIndex={0} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onNavigate('rentals'); } }} onClick={() => onNavigate('rentals')}
             className="group cursor-pointer rounded-xl border border-stone-200 bg-white p-4 transition-all hover:border-[#1E4D38]/50 hover:shadow-xs flex flex-col justify-between"
           >
             <div>
               <div className="text-[11px] font-medium text-stone-500 flex items-center justify-between">
-                <span>2. Matériel sorti</span>
+                <span>Matériel sorti</span>
                 <Truck className="h-3.5 w-3.5 text-stone-400 group-hover:text-[#1E4D38]" />
               </div>
               <div className="mt-2 text-2xl font-bold text-stone-900 tracking-tight">
                 {rentedUnitsCount}
               </div>
-              <div className="text-xs text-stone-600 mt-0.5">unités chez {activeRentals.length} clients</div>
+              <div className="text-xs text-stone-600 mt-0.5">unités chez {activeCustomerCount} clients</div>
             </div>
             <div className="mt-3 pt-2 border-t border-stone-100 text-[11px] text-[#1E4D38] font-medium">
               Voir les détenteurs actuels →
@@ -190,7 +229,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
           {/* Card 3: When should it come back? */}
           <div
-            onClick={() => onNavigate('rentals')}
+            role="button" tabIndex={0} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onNavigate('rentals'); } }} onClick={() => onNavigate('rentals')}
             className={`group cursor-pointer rounded-xl border p-4 transition-all flex flex-col justify-between ${
               overdueRentals.length > 0
                 ? 'border-amber-200 bg-amber-50/40 hover:border-amber-300'
@@ -199,7 +238,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           >
             <div>
               <div className="text-[11px] font-medium text-stone-500 flex items-center justify-between">
-                <span>3. Retours attendus</span>
+                <span>Retours attendus</span>
                 <Clock className="h-3.5 w-3.5 text-stone-400" />
               </div>
               <div className="mt-2 text-2xl font-bold text-stone-900 tracking-tight">
@@ -220,12 +259,12 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
           {/* Card 4: What is paid vs owed? */}
           <div
-            onClick={() => onNavigate('payments')}
+            role="button" tabIndex={0} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onNavigate('payments'); } }} onClick={() => onNavigate('payments')}
             className="group cursor-pointer rounded-xl border border-stone-200 bg-white p-4 transition-all hover:border-[#1E4D38]/50 hover:shadow-xs flex flex-col justify-between"
           >
             <div>
               <div className="text-[11px] font-medium text-stone-500 flex items-center justify-between">
-                <span>4. Règlements & Solde</span>
+                <span>Solde à encaisser</span>
                 <CreditCard className="h-3.5 w-3.5 text-stone-400 group-hover:text-[#1E4D38]" />
               </div>
               <div className="mt-2 text-xl font-bold text-stone-900 tracking-tight">
@@ -240,7 +279,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
           {/* Card 5: Which equipment is damaged / unavailable? */}
           <div
-            onClick={() => onNavigate('maintenance')}
+            role="button" tabIndex={0} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onNavigate('maintenance'); } }} onClick={() => onNavigate('maintenance')}
             className={`group cursor-pointer rounded-xl border p-4 transition-all flex flex-col justify-between ${
               maintenanceCount > 0
                 ? 'border-stone-200 bg-white hover:border-amber-400'
@@ -249,7 +288,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           >
             <div>
               <div className="text-[11px] font-medium text-stone-500 flex items-center justify-between">
-                <span>5. Blocage & Atelier</span>
+                <span>Maintenance</span>
                 <Wrench className="h-3.5 w-3.5 text-stone-400" />
               </div>
               <div className="mt-2 text-2xl font-bold text-stone-900 tracking-tight">
@@ -263,53 +302,6 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           </div>
         </div>
       </div>
-
-      {/* Overdue Alert Banner if any */}
-      {overdueRentals.length > 0 && (
-        <div className="rounded-xl border border-amber-300 bg-amber-50/70 p-4">
-          <div className="flex items-start gap-3">
-            <AlertTriangle className="h-5 w-5 text-amber-700 shrink-0 mt-0.5" />
-            <div className="flex-1">
-              <h3 className="text-xs font-bold text-amber-900 uppercase tracking-wide">
-                Retards critiques de restitution ({overdueRentals.length})
-              </h3>
-              <p className="text-xs text-amber-800 mt-0.5">
-                Ces équipements n’ont pas été réintégrés et restent rigoureusement bloqués dans le moteur de disponibilité pour éviter les sur-réservations.
-              </p>
-              <div className="mt-3 space-y-2">
-                {overdueRentals.map((rental) => {
-                  const cust = customers.find((c) => c.id === rental.customerId);
-                  return (
-                    <div
-                      key={rental.id}
-                      onClick={() => onSelectRental(rental)}
-                      className="cursor-pointer flex flex-col sm:flex-row sm:items-center justify-between gap-2 p-2.5 rounded-lg bg-white/80 border border-amber-200/80 hover:bg-white text-xs"
-                    >
-                      <div className="flex items-center gap-2">
-                        <span className="font-semibold text-stone-900">{rental.referenceNumber}</span>
-                        <span>·</span>
-                        <span className="text-stone-700">{cust?.name || 'Client'}</span>
-                        <span>·</span>
-                        <span className="text-stone-500">
-                          {rental.lines.map((l) => `${l.quantity}x ${l.equipmentName}`).join(', ')}
-                        </span>
-                      </div>
-                      <div className="flex items-center gap-3">
-                        <span className="text-amber-800 font-medium">
-                          Retour prévu le {formatDateTime(rental.endDate)}
-                        </span>
-                        <span className="text-[#1E4D38] font-semibold hover:underline">
-                          Gérer le dossier →
-                        </span>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
 
       {/* Operational Split: Today's Tasks & Recent Activity */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -343,7 +335,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                     return (
                       <div
                         key={rental.id}
-                        onClick={() => onSelectRental(rental)}
+                        role="button" tabIndex={0} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onSelectRental(rental); } }} onClick={() => onSelectRental(rental)}
                         className="cursor-pointer flex items-center justify-between p-3 rounded-lg border border-stone-100 bg-stone-50/50 hover:bg-stone-50 transition-colors mb-2 text-xs"
                       >
                         <div>
@@ -360,9 +352,9 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                           <div className="font-medium text-stone-800">
                             {formatDateTime(rental.startDate)}
                           </div>
-                          <button className="text-[11px] text-[#1E4D38] font-semibold mt-0.5 hover:underline">
+                          <span className="text-[11px] text-[#1E4D38] font-semibold mt-0.5 hover:underline">
                             Valider le bon de sortie
-                          </button>
+                          </span>
                         </div>
                       </div>
                     );
@@ -383,7 +375,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                     return (
                       <div
                         key={rental.id}
-                        onClick={() => onSelectRental(rental)}
+                        role="button" tabIndex={0} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onSelectRental(rental); } }} onClick={() => onSelectRental(rental)}
                         className="cursor-pointer flex items-center justify-between p-3 rounded-lg border border-stone-100 bg-stone-50/50 hover:bg-stone-50 transition-colors mb-2 text-xs"
                       >
                         <div>
@@ -399,9 +391,9 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                           <div className="font-medium text-stone-800">
                             Échéance : {formatDateTime(rental.endDate)}
                           </div>
-                          <button className="text-[11px] text-[#1E4D38] font-semibold mt-0.5 hover:underline">
+                          <span className="text-[11px] text-[#1E4D38] font-semibold mt-0.5 hover:underline">
                             Enregistrer le retour & contrôle
-                          </button>
+                          </span>
                         </div>
                       </div>
                     );
@@ -453,7 +445,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           <div className="rounded-xl border border-stone-200 bg-white p-5 shadow-2xs">
             <h3 className="text-sm font-semibold text-stone-900 mb-3">{t.dashboard.recentActivity}</h3>
             <div className="space-y-3">
-              {auditLogs.slice(0, 5).map((log) => (
+              {[...auditLogs].sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()).slice(0, 5).map((log) => (
                 <div key={log.id} className="text-xs pb-2 border-b border-stone-100 last:border-0 last:pb-0">
                   <div className="flex items-center justify-between text-[11px] text-stone-400">
                     <span className="font-semibold text-stone-600 uppercase tracking-wider">
